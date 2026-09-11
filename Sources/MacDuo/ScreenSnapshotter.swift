@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import CoreImage
 import ScreenCaptureKit
 
 extension NSScreen {
@@ -56,6 +57,40 @@ final class ScreenSnapshotter {
     func discard() {
         latestImage = nil
         latestScreen = nil
+    }
+
+    /// Produces the only frame that may survive a sleep/wake boundary.
+    ///
+    /// It intentionally cannot be used to reconstruct the desktop: a large
+    /// Gaussian blur removes fine detail and an almost-opaque black veil makes
+    /// the remaining shapes decorative rather than readable.  The result
+    /// lives only in memory and is discarded as soon as the opening effect
+    /// ends.  In particular, do not retain `latestImage` for wake-up.
+    @MainActor
+    static func obscuredWakeSeed(from image: CGImage) -> CGImage? {
+        let source = CIImage(cgImage: image)
+        let extent = source.extent.integral
+        guard !extent.isEmpty else { return nil }
+
+        // Scale the blur with the display, rather than relying on a fixed
+        // radius that would be too weak on a high-resolution built-in panel.
+        let radius = max(extent.width, extent.height) / 12
+        let blurred = source
+            .clampedToExtent()
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
+            .cropped(to: extent)
+        // Keep broad colour masses visible so the wake animation is legible,
+        // while the large blur makes text, icons, and window details
+        // unrecoverable. The renderer applies an additional angle-dependent
+        // dim, so this still presents as a subdued lock-screen transition.
+        let veil = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.62))
+            .cropped(to: extent)
+        let privateImage = veil.composited(over: blurred)
+
+        // A non-caching context avoids retaining the clear screenshot in a
+        // Core Image cache beyond this one-way transformation.
+        let context = CIContext(options: [.cacheIntermediates: false])
+        return context.createCGImage(privateImage, from: extent)
     }
 
     /// Waits for a screenshot. A pre-warm capture already running counts.

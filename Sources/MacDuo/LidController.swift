@@ -15,6 +15,13 @@ struct Layout: Equatable {
     var frame: CGRect?
 }
 
+/// A close is allowed to use the current desktop; an opening is not.  Until
+/// the user's session is active again, an opening may show only `wakeSeed`.
+private enum EffectDirection {
+    case closing
+    case opening
+}
+
 @MainActor
 final class LidController: ObservableObject {
 
@@ -49,6 +56,14 @@ final class LidController: ObservableObject {
     private var isCapturePending = false
     private var lastMovedDownTime: CFTimeInterval = -.greatestFiniteMagnitude
     private var builtInLayout = Layout()
+    private var effectDirection: EffectDirection?
+    /// An in-memory, irreversibly blurred and darkened last frame. This is
+    /// the sole image retained across sleep and is never written to disk.
+    private var wakeSeed: CGImage?
+    private var isAwaitingScreenWake = false
+    private var sessionIsActive = true
+    private var isScreenLocked = false
+    private var isOpeningLive = false
 
     private static let idlePollInterval: TimeInterval = 1.0 / 8
     private static let activePollInterval: TimeInterval = 1.0 / 30
@@ -139,6 +154,10 @@ final class LidController: ObservableObject {
         streamer.stop()
         overlay.discardLive()
         isActive = false
+        effectDirection = nil
+        wakeSeed = nil
+        isAwaitingScreenWake = false
+        isOpeningLive = false
     }
 
     /// Plays the effect once on the current screen contents.
@@ -218,6 +237,10 @@ final class LidController: ObservableObject {
         let threshold = preferences.thresholdAngle
         if isActive {
             guard CACurrentMediaTime() - startedAt > Self.minimumEffectDuration else { return true }
+            // Keep the wake run alive behind LoginWindow, but do not replay it
+            // after unlock. A locked wake is intentionally handed back to
+            // macOS rather than trying to imitate the secure UI.
+            if effectDirection == .opening && isScreenLocked { return true }
             return angle < threshold + preferences.hysteresis
         }
         // A lid resting below the angle must not start by itself.
@@ -318,15 +341,23 @@ final class LidController: ObservableObject {
     private func setActive(_ active: Bool) {
         isActive = active
         if active {
+            effectDirection = .closing
             startedAt = CACurrentMediaTime()
             visualAngle.reset(to: rawAngle)
             snapshotter.endPrewarm()
             setPollInterval(Self.activePollInterval)
             presentPicture()
+            captureWakeSeed()
         } else {
+            let wasOpening = effectDirection == .opening
+            effectDirection = nil
+            isOpeningLive = false
             stopDisplayLink()
             overlay.dismiss(animated: true)
             snapshotter.discard()
+            // A seed is only useful for the one immediately following wake.
+            // Do not leave a stale representation of the desktop in memory.
+            if wasOpening || wakeSeed != nil { wakeSeed = nil }
         }
     }
 
@@ -354,6 +385,7 @@ final class LidController: ObservableObject {
             // frame. One screenshot starts the picture off.
             if let image = snapshotter.latestImage {
                 Diagnostics.lid.notice("present: live, seeding from the pre-warm screenshot")
+                cacheWakeSeed(from: image)
                 overlay.seed(image: image)
                 return
             }
@@ -363,6 +395,7 @@ final class LidController: ObservableObject {
         }
 
         if let image = snapshotter.latestImage, let screen = snapshotter.latestScreen {
+            cacheWakeSeed(from: image)
             show(image: image, on: screen)
             return
         }
@@ -380,6 +413,7 @@ final class LidController: ObservableObject {
             guard self.isActive, !self.overlay.isVisible,
                   let image = self.snapshotter.latestImage,
                   let screen = self.snapshotter.latestScreen else { return }
+            self.cacheWakeSeed(from: image)
             self.show(image: image, on: screen)
         }
     }
@@ -402,8 +436,27 @@ final class LidController: ObservableObject {
             )
             guard self.isActive, !self.overlay.isPictureReady,
                   let image = self.snapshotter.latestImage else { return }
+            self.cacheWakeSeed(from: image)
             self.overlay.seed(image: image)
         }
+    }
+
+    /// Refreshes the private wake frame during a closing run. It deliberately
+    /// takes one still image rather than keeping a clear stream frame alive.
+    private func captureWakeSeed() {
+        Task { [weak self] in
+            guard let self else { return }
+            await self.snapshotter.captureOnce()
+            guard self.isActive, self.effectDirection == .closing,
+                  let image = self.snapshotter.latestImage else { return }
+            self.cacheWakeSeed(from: image)
+        }
+    }
+
+    private func cacheWakeSeed(from image: CGImage) {
+        guard effectDirection == .closing else { return }
+        wakeSeed = ScreenSnapshotter.obscuredWakeSeed(from: image)
+        Diagnostics.lid.notice("updated private wake seed: \(self.wakeSeed != nil)")
     }
 
     private func show(image: CGImage, on screen: NSScreen) {
@@ -482,6 +535,33 @@ final class LidController: ObservableObject {
         workspace.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.resume() }
         }
+        workspace.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screensDidWake() }
+        }
+        workspace.addObserver(forName: NSWorkspace.sessionDidBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sessionDidBecomeActive() }
+        }
+        // These notifications are emitted by loginwindow even when the user
+        // session remains active across a lid sleep. They let us distinguish
+        // that case from a real lock-screen wake without ever sampling the
+        // clear desktop while it is locked.
+        let distributed = DistributedNotificationCenter.default()
+        distributed.addObserver(forName: Notification.Name("com.apple.screenIsLocked"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.isScreenLocked = true }
+        }
+        distributed.addObserver(forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.isScreenLocked = false
+                self?.sessionDidBecomeActive()
+            }
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.sessionDidBecomeActive() }
+        }
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil,
@@ -506,6 +586,8 @@ final class LidController: ObservableObject {
                 Task { await self.streamer.warmFilter() }
                 self.overlay.discardLive()
                 self.snapshotter.discard()
+                self.wakeSeed = nil
+                self.isAwaitingScreenWake = false
                 Task { await self.snapshotter.warmFilter() }
             }
         }
@@ -513,7 +595,13 @@ final class LidController: ObservableObject {
 
     private func suspend() {
         Diagnostics.lid.notice("suspend")
+        // If the asynchronous capture landed just before sleep, turn it into
+        // the private seed now. The original image is discarded below.
+        if let image = snapshotter.latestImage { cacheWakeSeed(from: image) }
+        isAwaitingScreenWake = wakeSeed != nil && preferences.isEnabled
+        sessionIsActive = false
         isSuspended = true
+        isOpeningLive = false
         stopDisplayLink()
         overlay.dismiss(animated: false)
         snapshotter.endPrewarm()
@@ -522,6 +610,7 @@ final class LidController: ObservableObject {
         overlay.discardLive()
         preview = nil
         isActive = false
+        effectDirection = nil
         isCapturePending = false
     }
 
@@ -539,5 +628,68 @@ final class LidController: ObservableObject {
             visualAngle.reset(to: angle)
         }
         setPollInterval(Self.idlePollInterval)
+    }
+
+    /// The backlight is available. A regular app may not reliably cover the
+    /// login window, but if it can draw here it is restricted to the private
+    /// seed until `sessionDidBecomeActive` arrives.
+    private func screensDidWake() {
+        guard isAwaitingScreenWake else { return }
+        isAwaitingScreenWake = false
+        guard preferences.isEnabled, let seed = wakeSeed,
+              let screen = NSScreen.builtIn,
+              let angle = sensor.angle(),
+              angle < preferences.thresholdAngle + preferences.hysteresis else {
+            wakeSeed = nil
+            return
+        }
+
+        rawAngle = angle
+        currentAngle = angle
+        visualAngle.reset(to: angle)
+        effectDirection = .opening
+        isOpeningLive = false
+        isActive = true
+        startedAt = CACurrentMediaTime()
+        overlay.show(
+            image: seed,
+            on: screen,
+            startAngle: preferences.thresholdAngle,
+            tuning: tuning,
+            fadeIn: Self.fadeInDuration
+        )
+        setPollInterval(Self.activePollInterval)
+        startDisplayLink()
+        Diagnostics.lid.notice("opening: showing private wake seed at \(angle, format: .fixed(precision: 1)) degrees")
+
+        // An unlock can beat the screen-wake notification. In that case the
+        // transition still starts with the private seed and then becomes live.
+        // If no lock-screen transition occurred, this is a normal wake in an
+        // already-active user session. It is safe to switch to live capture at
+        // once; a locked session remains on the private seed.
+        if sessionIsActive || !isScreenLocked {
+            sessionIsActive = true
+            beginLiveAfterUnlock()
+        }
+    }
+
+    /// No clear desktop pixels are requested until the user session has become
+    /// active again. The renderer keeps the private seed visible until the
+    /// first ScreenCaptureKit frame lands.
+    private func sessionDidBecomeActive() {
+        sessionIsActive = true
+        isScreenLocked = false
+        beginLiveAfterUnlock()
+    }
+
+    private func beginLiveAfterUnlock() {
+        guard isActive, effectDirection == .opening,
+              !isOpeningLive, let screen = NSScreen.builtIn else { return }
+        guard overlay.beginLive(on: screen, seed: wakeSeed) else { return }
+        isOpeningLive = true
+        streamer.start()
+        if let frame = streamer.newFrame() { overlay.absorb(frame) }
+        if displayLink == nil { startDisplayLink() }
+        Diagnostics.lid.notice("opening: session active, switched to live capture")
     }
 }

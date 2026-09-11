@@ -188,6 +188,21 @@ final class DepthOverlay {
         renderer?.discardLive()
     }
 
+    /// Keeps the current window up while replacing a held picture with a live
+    /// source.  The held (privacy-safe) seed is copied into the live texture
+    /// first, so there is no clear frame or flash while ScreenCaptureKit is
+    /// waiting for its first post-unlock frame.
+    @discardableResult
+    func beginLive(on screen: NSScreen, seed: CGImage?) -> Bool {
+        guard window != nil, let renderer else { return false }
+        screenSize = screen.frame.size
+        let pixelScale = Double(screen.backingScaleFactor)
+        buildToken += 1 // Cancel a still-pending static picture upload.
+        guard renderer.beginLive(screenSize: screenSize, pixelScale: CGFloat(pixelScale)) else { return false }
+        if let seed { _ = renderer.seed(image: seed) }
+        return true
+    }
+
 
     func show(
         image: CGImage,

@@ -56,7 +56,15 @@ macOS may require Screen Recording permission again after rebuilding with ad-hoc
 
 - Only MacBooks with a compatible lid angle sensor can use the effect. The app reports when no sensor is available.
 - The effect applies only to the built-in display.
-- The effect stops when macOS sleeps as the lid closes.
+- A full sleep still hands control to macOS. When the display wakes without a
+  lock screen, this build can show the reverse effect from an in-memory,
+  heavily blurred and darkened seed frame.
+  It does not modify the login window or expose a clear pre-sleep desktop while
+  the session is locked; live ScreenCaptureKit content resumes only after the
+  user session becomes active.
+- A regular app cannot guarantee an overlay above every macOS login or lock
+  screen configuration, so the earliest visible portion of the wake effect
+  varies with the system's lock-screen policy.
 - Clicks pass through the effect to the apps underneath.
 
 ## Acknowledgements
