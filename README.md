@@ -1,78 +1,105 @@
-<div align="center">
+# Mac Duo · 双向开合版 / Bidirectional Close & Open Edition
 
-# Mac Duo
+中文 | [English](#english)
 
-**Wish you could bring the iPhone Duo effect to your MacBook?**
+## 中文
 
-https://github.com/user-attachments/assets/3ea3b098-c6d2-4398-8f3a-e9087bbb33f2
+### 项目说明
 
-Close the lid and watch your screen content tilt, blur, and fade as it moves.  
-Mac Duo adds this effect to your MacBook, with controls in the menu bar.
+本项目基于 [Makito（sumimakito）](https://github.com/sumimakito) 的开源项目
+[Mac-Duo](https://github.com/sumimakito/Mac-Duo)。原项目通过 MacBook 转轴角度传感器、ScreenCaptureKit 和 Metal，模拟 iPhone Duo 风格的合盖视觉效果。
 
-<img src="./assets/menu.png" width="400" alt="Mac Duo menu">
+本仓库是在原项目基础上的改进版本：保留原作者的合盖效果，并增加**开盖/唤醒时的反向展开效果**，让透视、模糊和变暗随转轴角度恢复。
 
-</div>
+它是覆盖层应用，不是对 macOS WindowServer 或 LoginWindow 的系统补丁；不修改系统文件，不关闭 SIP。
 
-<hr>
+### 锁屏设置建议
 
-With the default settings, it's recommended to view the effect in front of your MacBook.
+要让短时间合盖后重新打开时直接看到展开效果，建议不要让 macOS 立即切到登录锁屏界面：
 
-- **Metal rendering:** Uses GPU rendering to apply perspective, blur, and dimming as the lid closes.
-- **Live screen content:** Uses ScreenCaptureKit to capture and render screen content in real time.
-- **Adjustable perspective:** Tweak the perspective to suit your viewing position and make the effect look more natural.
+1. 打开“ → 系统设置 → 锁定屏幕”。
+2. 找到“屏幕保护程序启动或显示器关闭后要求密码”。
+3. 建议设置为 **1 小时**或更长，不建议永久设置为“永不”。
 
+这样在设定时间内重新开盖，通常会回到当前用户会话，Mac Duo 才能显示开盖效果；超过设定时间仍会正常要求登录。需要更高安全性时，可恢复为“立即”。
 
-> [!NOTE]
-> Mac Duo is completely **free** to use. Whether you use the app or reuse its code in your projects, please consider [sponsoring me](https://github.com/sponsors/sumimakito) if you find it helpful.
->
-> Special thanks to our team at [Moeru AI](https://github.com/moeru-ai) for sponsoring the Apple Developer Program membership used to sign and notarize the prebuilt app here.
+即使启用锁屏，应用也不会跨睡眠保存清晰桌面：只保留内存中的强模糊、暗化种子帧，LoginWindow 仍由 macOS 控制。
 
-## Download
+### 环境要求
 
-[Download DMG](https://github.com/sumimakito/Mac-Duo/releases/download/dev/Mac-Duo-dev.dmg) | [Download ZIP](https://github.com/sumimakito/Mac-Duo/releases/download/dev/Mac-Duo-dev.zip)
+- macOS 14 或更高版本
+- 带兼容转轴角度传感器的 MacBook
+- Xcode 26 / Swift 6 或更高版本
+- 在“隐私与安全性 → 屏幕与系统音频录制”中允许 Mac Duo
 
-These downloads contain the latest [development build](https://github.com/sumimakito/Mac-Duo/releases/tag/dev) for Apple Silicon and Intel Macs.
-
-Requires macOS 14 or later and a MacBook with a compatible lid angle sensor.
-Grant Screen Recording permission when prompted to enable the effect.
-
-## Build
-
-Requires Xcode with Swift 6.0 or later. Run from the project directory:
+### 构建与运行
 
 ```sh
 ./build.sh
-```
-
-The script creates `build/Mac Duo.app` with an ad-hoc signature. Open it from Finder, or build and launch with:
-
-```sh
 ./build.sh --run
 ```
 
-macOS may require Screen Recording permission again after rebuilding with ad-hoc signing.
+脚本会生成 `build/Mac Duo.app`。首次运行时，请在系统设置中允许屏幕录制权限。
 
-## Known limitations
+### 已知限制
 
-- Only MacBooks with a compatible lid angle sensor can use the effect. The app reports when no sensor is available.
+- 只处理内置显示器。
+- 普通应用无法保证覆盖所有 macOS 登录/锁屏界面，因此锁屏开启时不承诺在密码界面上显示动画。
+- 点击会穿透覆盖层，继续作用于下方应用。
+- 本地开发签名适合个人 Mac 使用，不等同于公开发布所需的 Developer ID 公证包。
+
+### 致谢与许可
+
+原作者：**Makito（sumimakito）**。本版本保留原项目 Apache License 2.0 许可和 NOTICE 声明，并增加双向开合功能。
+
+---
+
+## English
+
+### About
+
+This repository is based on [Mac-Duo](https://github.com/sumimakito/Mac-Duo) by
+[Makito (sumimakito)](https://github.com/sumimakito). The original project uses the MacBook lid-angle sensor, ScreenCaptureKit, and Metal to reproduce an iPhone Duo-style effect while closing the lid.
+
+This repository keeps the original closing effect and adds a **reverse opening/wake effect**, so perspective, blur, and dimming unwind with the measured hinge angle.
+
+It is an overlay application, not a patch to WindowServer or LoginWindow. It does not modify system files or disable SIP.
+
+### Lock-screen recommendation
+
+To see the opening effect after a short close-and-open cycle:
+
+1. Open **Apple menu → System Settings → Lock Screen**.
+2. Find **Require password after screen saver begins or display is turned off**.
+3. Set it to **1 hour** (or longer). Avoid **Never** unless you accept the security trade-off.
+
+Within that period, macOS normally returns to the active user session and Mac Duo can draw the opening effect. After the selected period, authentication is still required. Restore **Immediately** for the strongest protection.
+
+The app never carries a clear desktop frame across sleep: only an in-memory, heavily blurred and darkened seed is retained. LoginWindow remains controlled by macOS.
+
+### Requirements
+
+- macOS 14 or later
+- A MacBook with a compatible lid-angle sensor
+- Xcode 26 / Swift 6 or later
+- Mac Duo enabled under **Privacy & Security → Screen & System Audio Recording**
+
+### Build and run
+
+```sh
+./build.sh
+./build.sh --run
+```
+
+The script creates `build/Mac Duo.app`. On first launch, allow Mac Duo in System Settings when prompted.
+
+### Known limitations
+
 - The effect applies only to the built-in display.
-- A full sleep still hands control to macOS. When the display wakes without a
-  lock screen, this build can show the reverse effect from an in-memory,
-  heavily blurred and darkened seed frame.
-  It does not modify the login window or expose a clear pre-sleep desktop while
-  the session is locked; live ScreenCaptureKit content resumes only after the
-  user session becomes active.
-- A regular app cannot guarantee an overlay above every macOS login or lock
-  screen configuration, so the earliest visible portion of the wake effect
-  varies with the system's lock-screen policy.
-- Clicks pass through the effect to the apps underneath.
+- A regular app cannot guarantee an overlay above every macOS login/lock screen, so no animation is promised over a password prompt.
+- Clicks pass through the overlay to the app underneath.
+- The local development signature is intended for personal Mac use and is not a notarized Developer ID release package.
 
-## Acknowledgements
+### Credits and license
 
-This project is built with AI assistance.
-
-## License
-
-Licensed under the [Apache License 2.0](LICENSE). Copyright 2026 Makito.
-
-See [NOTICE](NOTICE) for attribution.
+Original author: **Makito (sumimakito)**. This repository retains the upstream Apache License 2.0 terms and NOTICE file, and adds bidirectional close/open behavior.
